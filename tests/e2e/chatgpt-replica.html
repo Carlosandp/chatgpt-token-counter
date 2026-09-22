@@ -1,0 +1,83 @@
+<!doctype html>
+<html class="dark" lang="es">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ChatGPT replica (test fixture)</title>
+<style>
+  /* Values measured on the real hydrated page (dark): surface #212121, radius 28px, body grid areas, etc. */
+  html.dark { color-scheme: dark; --text-primary:#fff; --text-secondary:#cdcdcd; --text-tertiary:#afafaf; --border-light:#ffffff0d; --border-medium:#ffffff26; --main-surface-primary:#000; --main-surface-secondary:#212121; --main-surface-tertiary:#2f2f2f; }
+  html.light { color-scheme: light; --text-primary:#0d0d0d; --text-secondary:#5d5d5d; --text-tertiary:#8f8f8f; --border-light:#0000000d; --border-medium:#00000026; --main-surface-primary:#fff; --main-surface-secondary:#fff; --main-surface-tertiary:#f4f4f4; }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; background: var(--main-surface-primary); color: var(--text-primary); font: 16px/24px ui-sans-serif, -apple-system, system-ui, "Segoe UI", Helvetica, Arial, sans-serif; }
+  header { padding: 12px 16px; display:flex; gap: 12px; align-items:center; }
+  header button { background: none; border: 0; color: inherit; font: inherit; font-weight: 600; }
+  #thread { flex: 1; width: min(100% - 32px, 768px); margin: 0 auto; }
+  #thread [data-message-author-role] { padding: 8px 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24px; overflow: hidden; }
+  #composer-wrap { width: min(100% - 32px, 640px); margin: 0 auto 24px; }
+  form[data-type="unified-composer"] { display:block; }
+  .rel { position: relative; }
+  [data-composer-surface] { display: grid; grid-template-areas: "eyebrow" "controls" "body"; grid-template-columns: 1fr; overflow: clip; border-radius: 28px; background: var(--main-surface-secondary); border: 0 solid var(--border-light); box-shadow: 0 0 0 1px var(--border-medium); }
+  html.light [data-composer-surface] { box-shadow: 0 0 0 1px rgba(0,0,0,.2), 0 4px 4px rgba(0,0,0,.04); }
+  [data-composer-controls-anchor] { grid-area: controls; position: relative; height: 0; }
+  [data-composer-body] { grid-area: body; display: grid; grid-template-columns: 36px 1fr 80px; grid-template-areas: "header header header" "leading primary trailing" ". footer ."; padding: 5px 8px; }
+  [data-composer-body].multi { grid-template-areas: "header header header" "primary primary primary" "leading footer trailing"; padding: 9px 8px; }
+  [data-composer-transition-slot="leading"] { grid-area: leading; display:block; }
+  [data-composer-transition-slot="trailing"] { grid-area: trailing; display:flex; justify-content:flex-end; align-items:flex-end; }
+  .primary { grid-area: primary; display:flex; padding: 0 6px 0 7px; overflow: hidden auto; min-height: 40px; }
+  .primary > div { flex: 1; overflow: auto; }
+  #prompt-textarea { padding: 8px 0 8px; outline: none; min-height: 24px; max-height: 240px; }
+  #prompt-textarea p { margin: 0; }
+  #prompt-textarea p.placeholder::before { content: attr(data-placeholder); color: #8e8e8e; pointer-events: none; float: left; height: 0; }
+  .circ { width: 36px; height: 36px; border-radius: 9999px; border: 0; display:flex; align-items:center; justify-content:center; background: transparent; color: inherit; }
+  .circ.solid { background: var(--text-primary); color: var(--main-surface-primary); }
+  .circ svg { width: 20px; height: 20px; }
+  textarea.hidden-fallback { display: none; }
+</style>
+</head>
+<body>
+<header><button data-testid="model-switcher-dropdown-button"><span>ChatGPT 5</span></button></header>
+<div id="thread"><div data-message-author-role="user">Mensaje anterior (historial: no debe contarse).</div></div>
+<div id="stop-slot"></div>
+<div id="composer-wrap"></div>
+<template id="tpl">
+  <form data-type="unified-composer">
+    <div style="display:none"><input type="file" id="upload-files"></div>
+    <div class="rel">
+      <div data-composer-surface="true">
+        <div data-composer-controls-anchor></div>
+        <div data-composer-body data-composer-grid>
+          <div data-composer-transition-slot="leading"><span style="display:flex"><button class="circ" data-testid="composer-plus-btn" aria-label="Agregar archivos y más" id="composer-plus-btn" type="button"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M10 4v12M4 10h12"/></svg></button></span></div>
+          <div class="primary"><div>
+            <textarea class="hidden-fallback" aria-label="Chatear con ChatGPT"></textarea>
+            <div id="prompt-textarea" class="ProseMirror" contenteditable="true" role="textbox" aria-label="Chatear con ChatGPT" data-virtualkeyboard="true"><p class="placeholder" data-placeholder="Pregúntale a ChatGPT"><br class="ProseMirror-trailingBreak"></p></div>
+          </div></div>
+          <div data-composer-transition-slot="trailing"><div style="display:flex">
+            <span style="display:flex"><button class="circ" aria-label="Iniciar dictado" type="button"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="7" y="3" width="6" height="9" rx="3"/><path d="M4.5 10a5.5 5.5 0 0011 0M10 15.5V18"/></svg></button></span>
+            <div data-testid="composer-speech-button-container"><div style="display:inline-flex"><button class="circ solid" data-testid="composer-speech-button" aria-label="Iniciar voz" type="button"><svg viewBox="0 0 20 20" fill="currentColor"><rect x="3" y="7" width="2" height="6"/><rect x="7" y="4" width="2" height="12"/><rect x="11" y="6" width="2" height="8"/><rect x="15" y="8" width="2" height="4"/></svg></button></div></div>
+          </div></div>
+        </div>
+      </div>
+    </div>
+  </form>
+</template>
+<script>
+  const wrap = document.getElementById('composer-wrap');
+  function build() {
+    wrap.replaceChildren(document.getElementById('tpl').content.cloneNode(true));
+    const ed = wrap.querySelector('#prompt-textarea'), body = wrap.querySelector('[data-composer-body]');
+    ed.addEventListener('input', () => {
+      const text = ed.innerText.trim();
+      body.classList.toggle('multi', text.length > 70 || text.includes('\n'));
+      const p = ed.querySelector('p'); if (p) p.classList.toggle('placeholder', text.length === 0);
+    });
+  }
+  build();
+  // Test hooks (a real page would do these itself)
+  window.__recreate = () => build();                       // React re-creating the whole composer
+  window.__addMessage = (role, text) => { const d = document.createElement('div'); d.dataset.messageAuthorRole = role; d.textContent = text; document.getElementById('thread').append(d); };
+  window.__stream = (on) => { const slot = document.getElementById('stop-slot'); slot.replaceChildren(); if (on) { const b = document.createElement('button'); b.dataset.testid = 'stop-button'; b.textContent = 'Stop'; slot.append(b); } };
+  window.__theme = (t) => { document.documentElement.className = t; };
+  window.__surfaceClicks = 0; document.addEventListener('click', (e) => { if (e.target.closest && e.target.closest('[data-composer-surface]')) window.__surfaceClicks++; });
+</script>
+</body>
+</html>

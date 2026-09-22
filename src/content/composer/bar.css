@@ -1,0 +1,234 @@
+/*
+ * Composer usage bar: a row at the bottom of the composer card. Colours come from ChatGPT's own theme
+ * variables (--text-*, --border-medium, --main-surface-*), which switch with html.dark / html.light, so
+ * it follows the theme without any script; the fallbacks derive from currentColor and keep it legible if
+ * OpenAI renames them. Only the warning/danger states use fixed colours, on purpose.
+ *
+ * Responsive by the width of the bar itself (container query), not the window: the composer can be
+ * narrow inside a wide window. The bar is a row of its own below the native buttons, so it cannot cover them.
+ */
+.gc-bar {
+  --gc-fg: var(--text-tertiary, color-mix(in srgb, currentColor 65%, transparent));
+  --gc-strong: var(--text-secondary, currentColor);
+  --gc-track: color-mix(in srgb, var(--text-primary, currentColor) 14%, transparent);
+  --gc-fill: color-mix(in srgb, var(--text-primary, currentColor) 60%, transparent);
+  --gc-alert: var(--gc-strong);
+
+  container: gc-bar / inline-size;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 16px;
+  row-gap: 6px;
+  width: 100%;
+  min-height: 24px;
+  /* Side padding clears the card's rounded corners (28px radius). */
+  margin: 0;
+  padding: 0 20px 10px;
+  box-sizing: border-box;
+  color: var(--gc-fg);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+  user-select: none;
+  /* The card is a grid whose template is "eyebrow / controls / body": -1 puts the bar in a row of its own after them. */
+  grid-column: 1 / -1;
+  grid-row: -1;
+}
+
+.gc-bar[data-state='warn'] {
+  --gc-fill: #ff9f0a;
+  --gc-alert: #ff9f0a;
+}
+
+.gc-bar[data-state='danger'] {
+  --gc-fill: #ff453a;
+  --gc-alert: #ff453a;
+}
+
+.gc-bar [hidden] {
+  display: none !important;
+}
+
+.gc-bar--empty .gc-bar__cell--draft .gc-bar__value {
+  opacity: 0.7;
+}
+
+.gc-bar__cell {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: baseline;
+  gap: 0.35em;
+  white-space: nowrap;
+}
+
+.gc-bar__cell--daily { order: 0; }
+.gc-bar__meter { order: 1; }
+.gc-bar__cell--draft { order: 2; }
+.gc-bar__plan { order: 3; }
+
+.gc-bar__value,
+.gc-bar__used {
+  color: var(--gc-strong);
+  font-weight: 500;
+}
+
+.gc-bar__pct {
+  color: var(--gc-alert);
+  font-weight: 600;
+  transition: color 300ms ease;
+}
+
+.gc-bar__flag,
+.gc-bar__unit,
+.gc-bar__sep {
+  opacity: 0.8;
+}
+
+/* Static "generating" marker: no pulsing, no animation. */
+.gc-bar__live {
+  flex: none;
+  align-self: center;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #30d158;
+}
+
+.gc-bar__meter {
+  position: relative;
+  flex: 1 1 96px;
+  min-width: 48px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--gc-track);
+  overflow: hidden;
+}
+
+.gc-bar__fill {
+  display: block;
+  width: 0%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--gc-fill);
+  transition: width 300ms ease, background-color 300ms ease;
+}
+
+/* ChatGPT's own reset sizes <select> elements; pin ours so the row keeps its height. */
+.gc-bar__plan {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: 58px;
+  height: 20px;
+  margin: 0;
+  padding: 2px 16px 2px 6px;
+  border: 1px solid var(--border-medium, color-mix(in srgb, currentColor 22%, transparent));
+  border-radius: 6px;
+  background-color: transparent;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='4'%3E%3Cpath d='M0 0l3.5 4L7 0z' fill='%238e8e8e'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-size: 7px 4px;
+  background-position: right 5px center;
+  color: var(--gc-strong);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  outline: none;
+}
+
+.gc-bar__plan:hover {
+  background-color: color-mix(in srgb, currentColor 8%, transparent);
+}
+
+.gc-bar__plan:focus-visible {
+  outline: 2px solid color-mix(in srgb, currentColor 40%, transparent);
+  outline-offset: 1px;
+}
+
+.gc-bar__plan option {
+  background: var(--main-surface-secondary, Canvas);
+  color: var(--text-primary, CanvasText);
+}
+
+/* Narrow: two lines. Today and Draft on the first, the bar across the second next to the plan picker. */
+@container gc-bar (max-width: 520px) {
+  .gc-bar__cell--draft {
+    order: 1;
+    margin-inline-start: auto;
+  }
+
+  .gc-bar__meter {
+    order: 2;
+    /* Whole row minus the plan picker (58px) and one column gap (16px): it can never share the first line. */
+    flex: 1 0 calc(100% - 74px);
+  }
+}
+
+/* Narrower still (~360px windows): drop the unit word. */
+@container gc-bar (max-width: 340px) {
+  .gc-bar__unit {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gc-bar__fill,
+  .gc-bar__pct {
+    transition: none;
+  }
+}
+
+.gc-tip {
+  position: fixed;
+  z-index: 10000;
+  max-width: 300px;
+  padding: 8px 10px;
+  box-sizing: border-box;
+  border: 1px solid var(--border-medium, rgba(128, 128, 128, 0.3));
+  border-radius: 10px;
+  background: var(--main-surface-secondary, #fff);
+  color: var(--text-primary, #0d0d0d);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  font: 400 12px/1.4 ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 120ms ease;
+}
+
+.gc-tip--visible {
+  opacity: 1;
+  visibility: visible;
+}
+
+.gc-tip__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.gc-tip__row + .gc-tip__row {
+  margin-top: 2px;
+}
+
+.gc-tip__k {
+  color: var(--text-secondary, inherit);
+}
+
+.gc-tip__v {
+  font-weight: 500;
+  text-align: end;
+}
+
+.gc-tip__note {
+  margin-top: 6px;
+  color: var(--text-secondary, inherit);
+  font-size: 11px;
+}

@@ -1,0 +1,25 @@
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor directories
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Node (there is no build step; this is only for local tooling)
+node_modules/
+package-lock.json
+
+# Packaging output
+dist/
+build/
+*.zip
+
+# Logs and local tooling databases
+*.log
+ruvector.db
+
+# End-to-end run output (screenshots and JSON report)
+tests/e2e/shots/

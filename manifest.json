@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "ChatGPT Counter",
+  "version": "5.1.0",
+  "minimum_chrome_version": "111",
+  "description": "Adds a usage bar inside the ChatGPT message box: a live input-token count for the draft and an estimated daily usage against an approximate plan reference. Only counts tokens used TODAY — never old chat history.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "ChatGPT Counter"
+  },
+  "permissions": [
+    "storage"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*"
+      ],
+      "run_at": "document_idle",
+      "world": "ISOLATED",
+      "css": [
+        "src/content/composer/bar.css"
+      ],
+      "js": [
+        "src/content/constants.js",
+        "src/vendor/o200k_base.js",
+        "src/content/daily.js",
+        "src/content/main.js",
+        "src/content/composer/tokens.js",
+        "src/content/composer/selectors.js",
+        "src/content/composer/bar.js",
+        "src/content/composer/index.js"
+      ]
+    }
+  ]
+}
