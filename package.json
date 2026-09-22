@@ -1,6 +1,6 @@
 {
   "name": "chatgpt-token-counter",
-  "version": "5.1.0",
+  "version": "5.1.1",
   "description": "Chrome extension (Manifest V3) that shows a usage bar inside the chatgpt.com message box: a live o200k_base token count for the draft and an estimated daily total against an approximate plan reference.",
   "private": true,
   "license": "MIT",

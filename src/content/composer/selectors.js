@@ -23,12 +23,16 @@
   const GC = (globalThis.GPTCounter = globalThis.GPTCounter || {});
 
   const COMPOSER_ROOTS = 'form[data-type="unified-composer"], [data-composer-surface]';
+  // Only the rich (contenteditable) editor. The server-rendered page shows a plain <textarea> inside the
+  // same card until React hydrates, and React swaps it for #prompt-textarea in the hydration commit itself.
+  // Anything added to that server markup is a hydration mismatch: React throws the whole composer away and
+  // renders it again, taking the bar with it. The contenteditable editor only exists once React owns the
+  // card, so it is also the signal that inserting the bar is safe.
   const EDITOR_SELECTORS = [
     '#prompt-textarea[contenteditable="true"]',
-    '#prompt-textarea',
+    '#prompt-textarea[contenteditable]', // ProseMirror sets "false" while the box is temporarily read-only
     '[role="textbox"][contenteditable="true"][aria-multiline="true"]',
     '[role="textbox"][contenteditable="true"]',
-    'form textarea',
   ];
   const CARD = '[data-composer-surface]';
   const MAX_CLIMB = 12;
@@ -45,7 +49,7 @@
     return pool.reduce((best, el) => (el.getBoundingClientRect().bottom > best.getBoundingClientRect().bottom ? el : best));
   }
 
-  /** The prompt editor, or null when none is on screen. ChatGPT also keeps a hidden fallback <textarea>. */
+  /** The prompt editor, or null when none is on screen (including before hydration, see EDITOR_SELECTORS). */
   function findEditor() {
     for (const selector of EDITOR_SELECTORS) {
       const matches = Array.from(document.querySelectorAll(selector)).filter(isUsableEditor);
@@ -119,10 +123,6 @@
 
   /** Where the usage bar goes: `{ parent, before }` (insert `before` inside `parent`; null = last), or null. */
   function findAnchor(editor) {
-    // Before React hydrates, the page shows a plain <textarea> outside the real composer. Adding nodes to
-    // that server-rendered markup makes React discard it (the page goes blank), so wait for the real one.
-    if (editor.matches('textarea') && !editor.closest(CARD)) return null;
-
     const root = findComposerRoot(editor);
     if (!root) return null;
     for (const strategy of ANCHOR_STRATEGIES) {

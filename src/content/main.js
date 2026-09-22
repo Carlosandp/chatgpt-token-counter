@@ -8,9 +8,16 @@
 // o200k_base encoding), and the reference limits in constants.js are calibrated against it, so the two
 // figures are never added together or compared.
 //
-// What is and is not counted: only messages that show up *after* the tracker takes a baseline for the
-// current chat. Whatever was already on screen when a chat opened is history, and history that scrolls
-// into view later (ChatGPT loads older turns lazily) is history too. Both are ignored for good.
+// What is and is not counted: only the turn being produced now. Each message is classified the first
+// time it is seen. It is new usage when a turn is live (ChatGPT is generating, or the user has just sent
+// something) and it is the latest message of its role, i.e. the user's new prompt or the reply being
+// streamed. Anything else is history and is ignored for good: the turns of a conversation that is being
+// opened, older turns that ChatGPT loads lazily while scrolling, and messages React re-creates after a
+// reply finishes.
+//
+// There is no fixed "baseline" delay. ChatGPT renders the turns of an existing conversation on the client,
+// seconds after the page (measured: ~5.8 s after navigation on chatgpt.com, well after any delay a timer
+// could guess), so a snapshot taken on a timer would count that history as today's usage.
 (() => {
   'use strict';
 
@@ -19,16 +26,31 @@
   const CHARS_PER_TOKEN = 4;
   const MESSAGE_SELECTOR = '[data-message-author-role]';
   const STREAMING_SELECTOR = '[data-testid="stop-button"], button[aria-label="Stop streaming"]';
+  const SEND_BUTTON_SELECTOR = '[data-testid="send-button"], #composer-submit-button, button.composer-submit-btn';
+  const EDITOR_SELECTOR = '#prompt-textarea, [role="textbox"][contenteditable]';
 
-  // A fresh chat needs a moment to render before its messages can be treated as history. The longer
-  // delay after a navigation covers the second render ChatGPT does when it swaps conversations.
-  const BASELINE_DELAY_MS = 1200;
-  const BASELINE_DELAY_NAV_MS = 1400;
-  const COUNT_DEBOUNCE_MS = 80;
+  // At most one counting pass per this interval. A throttle, not a debounce: a reply streams without pauses,
+  // and a debounce would postpone the first pass (and the classification of the new turn) until it ends.
+  const COUNT_THROTTLE_MS = 200;
   const LOCATION_POLL_MS = 500;
+  // A send whose turn never starts (an error, an empty box) must not leave the turn open forever: after
+  // this long without ChatGPT generating, new messages are history again.
+  const SEND_WINDOW_MS = 30000;
+
+  const INSTANCE_ATTR = 'data-gc-daily';
+  const instanceId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
 
   const DAILY_PREFIX = 'gc:daily:';
   const LEGACY_PREFIX = 'gc:chat:'; // per-chat keys older versions wrote and never read back
+
+  /** False once the extension was reloaded, updated or removed: this copy of the script is an orphan. */
+  const extensionAlive = () => {
+    try {
+      return Boolean(chrome.runtime?.id);
+    } catch {
+      return false;
+    }
+  };
 
   const daily = new GC.DailyUsage();
   GC.daily = daily; // the composer bar subscribes to this
@@ -87,21 +109,67 @@
   let storageKey = storageKeyForToday();
   let generating = false;
 
-  // Counting is closed until the first baseline is taken. Without this, the mutations fired while the
-  // page hydrates (and by the composer bar inserting itself) would count the visible history as new.
-  let counting = false;
+  // Nothing is added before today's stored total has been read, or the first write would overwrite it.
+  let ready = false;
 
-  // Messages that were already there when the baseline was taken, and how much each counted message has
-  // contributed so far. Weak references: a turn removed from the DOM stops being tracked on its own
-  // instead of pinning a detached subtree in memory for as long as the tab stays open.
-  let history = new WeakSet();
-  let counted = new WeakMap();
+  // When the user last sent a prompt (0 = no send pending). See SEND_WINDOW_MS.
+  let sentAt = 0;
+
+  // Messages classified as history, and how much each counted message has contributed so far. Tracked by
+  // element (weak references: a turn removed from the DOM stops being tracked on its own instead of pinning
+  // a detached subtree in memory) and by ChatGPT's data-message-id, so that a turn React renders again as a
+  // new element (when a reply finishes, or when a new chat moves to its /c/<id> URL) is recognised.
+  const history = new WeakSet();
+  const historyIds = new Set();
+  const counted = new WeakMap();
+  const countedIds = new Map();
+
+  const messageId = (message) => message.getAttribute('data-message-id') || null;
+
+  /** Tokens already added for this message, or undefined if it has never been counted. */
+  function countedSoFar(message, id) {
+    if (counted.has(message)) return counted.get(message);
+    return id !== null ? countedIds.get(id) : undefined;
+  }
+
+  function markCounted(message, id, tokens) {
+    counted.set(message, tokens);
+    if (id !== null) countedIds.set(id, tokens);
+  }
+
+  function markHistory(message, id) {
+    history.add(message);
+    if (id !== null) historyIds.add(id);
+  }
 
   let countTimer = null;
+  let observer = null;
+  let poll = null;
 
   function persist() {
-    chrome.storage.local.set({ [storageKey]: total });
+    try {
+      chrome.storage.local.set({ [storageKey]: total });
+    } catch {
+      // Extension context invalidated: the next check shuts this copy down.
+    }
   }
+
+  /**
+   * Another copy of this script took over the page (the service worker injects one into tabs that were open
+   * during an install or update), or this copy's extension context is gone. Either way it must stop
+   * counting, or the same messages would be added twice or written through a dead context.
+   */
+  function superseded() {
+    if (document.documentElement.getAttribute(INSTANCE_ATTR) === instanceId && extensionAlive()) return false;
+    observer?.disconnect();
+    clearInterval(poll);
+    clearTimeout(countTimer);
+    document.removeEventListener('keydown', onKeyDown, true);
+    document.removeEventListener('click', onClick, true);
+    return true;
+  }
+
+  const turnIsLive = () => generating || (sentAt !== 0 && Date.now() - sentAt < SEND_WINDOW_MS);
 
   /** A tab left open past midnight starts the new day instead of adding to yesterday's total. */
   function rollOverIfNewDay() {
@@ -113,45 +181,51 @@
     persist();
   }
 
-  /** Marks everything currently on screen as history and starts counting what comes next. */
-  function takeBaseline() {
-    history = new WeakSet(messagesOnScreen());
-    counted = new WeakMap();
-
-    const model = readModelLabel();
-    if (model) daily.setModel(model);
-
-    counting = true;
-  }
-
-  function openChat(delayMs) {
-    counting = false;
-    setTimeout(takeBaseline, delayMs);
-  }
-
   // ── Counting ───────────────────────────────────────────────────────────────
 
+  /** The last message of each author role on screen: the only ones a live turn can be adding. */
+  function latestByRole(messages) {
+    const latest = new Map();
+    for (const message of messages) latest.set(message.getAttribute('data-message-author-role'), message);
+    return new Set(latest.values());
+  }
+
   /**
-   * Adds whatever is new since the last pass. An assistant turn grows while it streams, so each message
-   * contributes the difference against its own previous size; a message never subtracts.
+   * Classifies messages seen for the first time and adds whatever is new since the last pass. An assistant
+   * turn grows while it streams, so each message contributes the difference against its own previous size;
+   * a message never subtracts.
    */
   function countNewText() {
     countTimer = null;
-    if (!counting) return;
+    if (!ready || superseded()) return;
     rollOverIfNewDay();
 
     const model = readModelLabel();
     if (model) daily.setModel(model);
 
+    const messages = messagesOnScreen();
+    const live = turnIsLive();
+    const latest = live ? latestByRole(messages) : null;
+
     let added = 0;
-    for (const message of messagesOnScreen()) {
-      if (history.has(message)) continue;
+    for (const message of messages) {
+      const id = messageId(message);
+      if (history.has(message) || (id !== null && historyIds.has(id))) continue;
+
+      let before = countedSoFar(message, id);
+      if (before === undefined) {
+        if (!live || !latest.has(message)) {
+          markHistory(message, id);
+          continue;
+        }
+        before = 0;
+      }
 
       const tokens = estimateTokens(message.innerText || message.textContent || '');
-      const delta = tokens - (counted.get(message) || 0);
+      const delta = tokens - before;
       if (delta <= 0) continue;
 
-      counted.set(message, tokens);
+      markCounted(message, id, tokens);
       added += delta;
     }
 
@@ -162,38 +236,72 @@
   }
 
   function scheduleCount() {
-    clearTimeout(countTimer);
-    countTimer = setTimeout(countNewText, COUNT_DEBOUNCE_MS);
+    if (countTimer === null) countTimer = setTimeout(countNewText, COUNT_THROTTLE_MS);
+  }
+
+  function setGenerating(streaming) {
+    if (streaming === generating) return;
+    if (!streaming) {
+      // Last pass while the turn is still live, so a message that appeared since the previous pass is
+      // classified as part of it; after this, until the next send, new messages are history.
+      clearTimeout(countTimer);
+      countNewText();
+      sentAt = 0;
+    }
+    generating = streaming;
+    daily.setGenerating(streaming);
+  }
+
+  // ── Sends ──────────────────────────────────────────────────────────────────
+
+  // The user's own prompt can reach the DOM a moment before the stop button does, so a send opens the turn
+  // by itself. Capture phase: ChatGPT handles (and may stop) these events on the composer.
+  const hasDraft = (editor) => (editor?.innerText || editor?.value || '').trim().length > 0;
+
+  function onKeyDown(event) {
+    if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+    const editor = event.target instanceof Element ? event.target.closest(EDITOR_SELECTOR) : null;
+    if (editor && hasDraft(editor)) sentAt = Date.now();
+  }
+
+  function onClick(event) {
+    const button = event.target instanceof Element ? event.target.closest(SEND_BUTTON_SELECTOR) : null;
+    if (button && !button.disabled) sentAt = Date.now();
   }
 
   // ── Wiring ─────────────────────────────────────────────────────────────────
 
+  document.documentElement.setAttribute(INSTANCE_ATTR, instanceId);
+
   restoreTotal((stored) => {
+    if (superseded()) return;
     storageKey = storageKeyForToday();
     total = stored;
     daily.setTokens(total);
-    openChat(BASELINE_DELAY_MS);
+    ready = true;
+    // Whatever is on screen by now is classified (as history, unless a turn is already live).
+    scheduleCount();
   });
 
-  new MutationObserver(() => {
-    if (!counting) return;
+  document.addEventListener('keydown', onKeyDown, true);
+  document.addEventListener('click', onClick, true);
+
+  observer = new MutationObserver(() => {
+    if (superseded()) return;
+    setGenerating(isStreaming());
     scheduleCount();
+  });
+  observer.observe(document.body, { childList: true, subtree: true, characterData: true });
 
-    const streaming = isStreaming();
-    if (streaming === generating) return;
-    generating = streaming;
-    daily.setGenerating(streaming);
-  }).observe(document.body, { childList: true, subtree: true, characterData: true });
-
-  // ChatGPT is a single-page app: switching conversations changes the URL without a load event, and the
-  // new conversation's messages must become history rather than be counted as fresh usage.
+  // ChatGPT is a single-page app: switching conversations changes the URL without a load event. The new
+  // conversation's turns need no special handling (they appear while no turn is live, so they are history);
+  // only the generating marker is reset, in case the old page's stop button went away without a mutation.
   let lastHref = location.href;
-  setInterval(() => {
+  poll = setInterval(() => {
+    if (superseded()) return;
     if (location.href !== lastHref) {
       lastHref = location.href;
-      generating = false;
-      daily.setGenerating(false);
-      openChat(BASELINE_DELAY_NAV_MS);
+      setGenerating(isStreaming());
     }
     rollOverIfNewDay();
   }, LOCATION_POLL_MS);

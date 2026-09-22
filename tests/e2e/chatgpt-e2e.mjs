@@ -23,7 +23,7 @@ b.on((m) => {
   if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') errors.push('CONSOLE ' + m.params.args.map((a) => a.value ?? a.description ?? '').join(' ').slice(0, 200));
 });
 try {
-  await loadExtension(b, EXT);
+  // The ChatGPT tab is open BEFORE the extension is installed: the bar must appear there without a reload.
   const t = await openTab(b, null);
   b.on(async (m) => {
     if (m.method !== 'Fetch.requestPaused' || m.sessionId !== t.sessionId) return;
@@ -34,6 +34,11 @@ try {
     } catch {}
   });
   await t.send('Fetch.enable', { patterns: [{ urlPattern: 'https://chatgpt.com/*' }] });
+  await t.send('Page.navigate', { url: 'https://chatgpt.com/' });
+  await sleep(800);
+  const extId = await loadExtension(b, EXT);
+  const waitFor = async (expr, ms = 5000) => { const end = Date.now() + ms; while (Date.now() < end) { if (await t.evalJs(expr)) return true; await sleep(50); } return false; };
+  ok('tab already open at install time: the bar appears without reloading the page', await waitFor(`document.querySelectorAll('[data-gc-bar]').length === 1`), '');
 
   const shot = async (name, pad = 24) => {
     const clip = await t.evalJs(`(() => { const r = document.querySelector('[data-composer-surface]').getBoundingClientRect(); const x = Math.max(0, r.x - ${pad}), y = Math.max(0, r.y - ${pad}); return { x, y, width: Math.min(innerWidth - x, r.width + ${pad * 2}), height: r.height + ${pad * 2}, scale: 2 }; })()`);
@@ -53,6 +58,25 @@ try {
   })()`);
   const typeText = async (text) => { await t.evalJs(`(() => { const e = document.querySelector('#prompt-textarea'); e.replaceChildren(); const p = document.createElement('p'); e.append(p); e.dispatchEvent(new Event('input')); e.focus(); })()`); await t.send('Input.insertText', { text }); await sleep(450); };
   const reload = async () => { await t.send('Page.navigate', { url: 'https://chatgpt.com/' }); for (let i = 0; i < 40 && !(await t.evalJs(`!!document.querySelector('[data-gc-bar]')`)); i++) await sleep(300); await sleep(300); };
+  // A turn as ChatGPT produces it: the stop button is on screen while the reply is added and grows.
+  const reply = async (text, id) => { await t.evalJs(`window.__stream(true)`); await sleep(50); await t.evalJs(`window.__addMessage('assistant', ${JSON.stringify(text)}, ${JSON.stringify(id || '')})`); await sleep(300); await t.evalJs(`window.__stream(false)`); await sleep(300); };
+  // Evaluates in the extension's current service worker (it is a new one after a reload).
+  const swEval = async (expression) => {
+    for (let i = 0; i < 40; i++) {
+      const { targetInfos } = await b.send('Target.getTargets');
+      const sw = targetInfos.find((x) => x.type === 'service_worker' && x.url.startsWith(`chrome-extension://${extId}/`));
+      if (sw) {
+        const { sessionId } = await b.send('Target.attachToTarget', { targetId: sw.targetId, flatten: true });
+        const r = await b.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, sessionId).catch((e) => ({ error: e }));
+        await b.send('Target.detachFromTarget', { sessionId }).catch(() => {});
+        if (!r.error) return r.result?.value;
+      }
+      await sleep(250);
+    }
+    throw new Error('service worker not reachable');
+  };
+  const storedToday = () => swEval(`chrome.storage.local.get(null).then((all) => Object.entries(all).find(([k]) => k.startsWith('gc:daily:'))?.[1] ?? 0)`);
+  const extensionErrors = () => errors.filter((e) => /chrome-extension|gc-|GPTCounter/.test(e));
 
   await setViewport(1280); await reload();
   let s = await state();
@@ -74,20 +98,27 @@ try {
   await shot('chatgpt-desktop-dark-multiline');
   await typeText('');
 
-  // daily counter: wait for main.js to settle (1.2 s), then add messages (chars/4 estimate, unchanged logic)
-  await sleep(1600);
-  await t.evalJs(`window.__addMessage('assistant', 'x'.repeat(4000))`); await sleep(500);
+  // daily counter (chars/4 estimate): no settling delay any more, a live turn is counted straight away
+  await reply('x'.repeat(4000), 'turn-1');
   s = await state();
   ok('daily tokens = ceil(4000/4)=1000 of the 1.5M Plus reference (0.1%)', s.used === '1,000 / 1.5M' && s.pct === '0.1%', JSON.stringify([s.used, s.pct, s.fill]));
+  // history that renders late (ChatGPT fetches an opened conversation's turns seconds after the page) is not usage
+  await sleep(1500);
+  await t.evalJs(`window.__addMessage('user', 'u'.repeat(400)); window.__addMessage('assistant', 'h'.repeat(8000))`); await sleep(500);
+  s = await state();
+  ok('turns that appear with no live turn (late history) are not counted', s.used === '1,000 / 1.5M', s.used);
+  await t.evalJs(`window.__rerenderMessage('turn-1')`); await sleep(500);
+  s = await state();
+  ok('a finished turn re-created by React (same data-message-id) is not counted twice', s.used === '1,000 / 1.5M', s.used);
   // choose Free plan (36k reference) like a user would; add more so the state moves to "warn"
   await t.evalJs(`(() => { const sel = document.querySelector('.gc-bar__plan'); sel.value = 'free'; sel.dispatchEvent(new Event('change', { bubbles: true })); })()`); await sleep(300);
   s = await state();
   ok('plan selector works: Free -> limit 36k, share recomputed (1000/36000=2.8%)', s.plan === 'free' && s.used === '1,000 / 36k' && s.pct === '2.8%', JSON.stringify([s.plan, s.used, s.pct]));
-  await t.evalJs(`window.__addMessage('assistant', 'y'.repeat(4 * 26100))`); await sleep(500);
+  await reply('y'.repeat(4 * 26100));
   s = await state();
   ok('warn state colours the bar (27,100 / 36k = 75.3% -> above the 0.75 warn threshold)', s.st === 'warn' && s.used === '27.1k / 36k', JSON.stringify([s.st, s.used, s.pct, s.fill]));
   await shot('chatgpt-desktop-dark-warn');
-  await t.evalJs(`window.__addMessage('assistant', 'z'.repeat(4 * 6000))`); await sleep(500);
+  await reply('z'.repeat(4 * 6000));
   s = await state();
   ok('danger state (33,100/36k = 91.9% -> above the 0.917 danger threshold)', s.st === 'danger', JSON.stringify([s.st, s.used, s.pct]));
   // real click on the select: the composer's own click handlers must not see it; native button clicks still bubble
@@ -122,7 +153,7 @@ try {
   ok('idle for 6 s: zero mutations touching the bar (no render loop)', idle === 0, `mutations=${idle}`);
 
   // responsive + themes
-  await t.evalJs(`window.__addMessage('assistant', 'w'.repeat(4 * 5000))`); await sleep(400);
+  await reply('w'.repeat(4 * 5000));
   await typeText('Borrador de ejemplo para la captura de pantalla.');
   for (const w of [1280, 900, 700, 600, 520, 500, 420, 390, 380, 340, 320]) {
     await setViewport(w); await sleep(450); s = await state();
@@ -146,7 +177,38 @@ try {
     ok(`tooltip (${name})`, !!tip, JSON.stringify(tip));
     if (name === 'daily') { const clip = await t.evalJs(`(() => { const r = document.querySelector('.gc-tip').getBoundingClientRect(), c = document.querySelector('[data-composer-surface]').getBoundingClientRect(); const y = Math.max(0, r.y - 10); return { x: Math.max(0, c.x - 20), y, width: c.width + 40, height: c.bottom + 20 - y, scale: 2 }; })()`); writeFileSync(`${OUT}/chatgpt-tooltip-daily.png`, Buffer.from((await t.send('Page.captureScreenshot', { format: 'png', clip })).data, 'base64')); }
   }
-  const ours = errors.filter((e) => /chrome-extension|gc-|GPTCounter/.test(e));
+  // Server-rendered page: nothing may be inserted before hydration, and the bar must follow it at once.
+  await t.send('Page.navigate', { url: 'https://chatgpt.com/?ssr=1500' });
+  await waitFor(`document.readyState === 'complete' && !!document.querySelector('[data-composer-surface] textarea')`);
+  await sleep(700);
+  const beforeHydration = await t.evalJs(`document.querySelectorAll('[data-gc-bar]').length`);
+  await t.evalJs(`window.__barAt = null; new MutationObserver((l, mo) => { if (document.querySelector('[data-composer-surface] [data-gc-bar]')) { window.__barAt = performance.now(); mo.disconnect(); } }).observe(document.body, { childList: true, subtree: true })`);
+  await waitFor(`window.__barAt !== null`, 4000);
+  const hyd = await t.evalJs(`({ mismatch: window.__hydrationMismatch, lag: Math.round(window.__barAt - window.__hydratedAt), bars: document.querySelectorAll('[data-gc-bar]').length })`);
+  ok('server-rendered composer (before hydration): no bar inserted into its markup', beforeHydration === 0, `bars=${beforeHydration}`);
+  ok('hydration keeps the server markup (no mismatch caused by the extension)', hyd.mismatch === false, JSON.stringify(hyd));
+  ok('bar appears right after hydration (< 100 ms, no fixed delay)', hyd.bars === 1 && hyd.lag >= 0 && hyd.lag < 100, `lag=${hyd.lag} ms`);
+
+  // Extension reloaded / updated while the tab stays open: the new copy takes over, the orphan stops.
+  await t.send('Page.navigate', { url: 'https://chatgpt.com/' });
+  await waitFor(`!!document.querySelector('[data-gc-bar]')`);
+  await sleep(500);
+  const usedBefore = (await state()).used;
+  const storedBefore = await storedToday();
+  await loadExtension(b, EXT); // loading the same unpacked folder again = "Reload" in chrome://extensions
+  const took = await waitFor(`document.documentElement.getAttribute('data-gc-composer') !== ${JSON.stringify(await t.evalJs(`document.documentElement.getAttribute('data-gc-composer')`))}`, 8000);
+  await sleep(800);
+  s = await state();
+  ok('after reloading the extension: the open tab gets the new version without a page reload, exactly one bar', took && s.count === 1 && s.directChild, JSON.stringify({ took, count: s.count }));
+  await typeText('Hola de nuevo');
+  s = await state();
+  ok('after reloading the extension: draft counting works (exact tokenizer injected again)', s.draft === `~${o200k('Hola de nuevo')}` && s.draftFlagHidden === true, s.draft);
+  ok('after reloading the extension: daily total kept, nothing re-counted', s.used === usedBefore, `${s.used} vs ${usedBefore}`);
+  await reply('r'.repeat(400));
+  const storedAfter = await storedToday();
+  ok('after reloading the extension: a new turn is counted exactly once (orphan copy is stopped): +100', storedAfter - storedBefore === 100, `${storedBefore} -> ${storedAfter}`);
+
+  const ours = extensionErrors();
   ok('no console errors from the extension', ours.length === 0, JSON.stringify(ours.slice(0, 4)));
   console.log('ALL ERRORS SEEN:', JSON.stringify(errors.slice(0, 5)));
 } catch (e) { console.log('HARNESS ERROR', e.stack); }

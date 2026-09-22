@@ -71,10 +71,34 @@
       const p = ed.querySelector('p'); if (p) p.classList.toggle('placeholder', text.length === 0);
     });
   }
-  build();
+  // Server-rendered state, as measured on chatgpt.com before React hydrates: the same card, but with a
+  // visible plain <textarea> where the ProseMirror editor will be. Hydration then swaps the textarea for the
+  // editor inside the *same* card, unless the card holds nodes React did not render: that is a hydration
+  // mismatch, and React throws the server markup away and renders the composer again from scratch.
+  function serverRender() {
+    build();
+    wrap.querySelector('#prompt-textarea').remove();
+    wrap.querySelector('textarea').classList.remove('hidden-fallback');
+  }
+  function hydrate() {
+    const surface = wrap.querySelector('[data-composer-surface]');
+    const foreign = [...surface.children].filter((el) => !el.matches('[data-composer-controls-anchor], [data-composer-body]'));
+    window.__hydrationMismatch = foreign.length > 0;
+    if (window.__hydrationMismatch) return build();
+    const fresh = document.getElementById('tpl').content.querySelector('#prompt-textarea').cloneNode(true);
+    const ta = wrap.querySelector('textarea');
+    ta.classList.add('hidden-fallback');
+    ta.after(fresh);
+    window.__hydratedAt = performance.now();
+    fresh.addEventListener('input', () => { const p = fresh.querySelector('p'); if (p) p.classList.toggle('placeholder', fresh.innerText.trim().length === 0); });
+  }
+  const ssrDelay = Number(new URLSearchParams(location.search).get('ssr'));
+  if (ssrDelay > 0) { serverRender(); setTimeout(hydrate, ssrDelay); } else build();
   // Test hooks (a real page would do these itself)
   window.__recreate = () => build();                       // React re-creating the whole composer
-  window.__addMessage = (role, text) => { const d = document.createElement('div'); d.dataset.messageAuthorRole = role; d.textContent = text; document.getElementById('thread').append(d); };
+  window.__addMessage = (role, text, id) => { const d = document.createElement('div'); d.dataset.messageAuthorRole = role; if (id) d.dataset.messageId = id; d.textContent = text; document.getElementById('thread').append(d); return d; };
+  window.__rerenderMessage = (id) => { const old = document.querySelector(`[data-message-id="${id}"]`); const d = old.cloneNode(true); old.replaceWith(d); }; // React re-creating a finished turn
+  window.__send = (text) => { window.__stream(true); window.__addMessage('user', text); };
   window.__stream = (on) => { const slot = document.getElementById('stop-slot'); slot.replaceChildren(); if (on) { const b = document.createElement('button'); b.dataset.testid = 'stop-button'; b.textContent = 'Stop'; slot.append(b); } };
   window.__theme = (t) => { document.documentElement.className = t; };
   window.__surfaceClicks = 0; document.addEventListener('click', (e) => { if (e.target.closest && e.target.closest('[data-composer-surface]')) window.__surfaceClicks++; });

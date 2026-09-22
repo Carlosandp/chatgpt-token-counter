@@ -5,7 +5,8 @@
  *  - `exact: true`  the count is exactly what the vendored o200k_base encoding produces for the text.
  *  - Model fit      o200k_base is the encoding OpenAI documents for GPT-4o and the o-series; this code
  *                   cannot tell which model a chat uses, so it never asserts the count matches a model.
- *  - `exact: false` the tokenizer is missing or threw, so the count is a ~4 characters/token guess.
+ *  - `exact: false` the tokenizer is missing (not injected yet, or unavailable) or threw, so the count is
+ *                   a ~4 characters/token guess.
  * The bar therefore always shows "~" for the draft, and the tooltip states which of these applies.
  */
 (() => {
@@ -24,6 +25,9 @@
   const estimateByChars = (text) => Math.ceil(text.length / CHARS_PER_TOKEN);
 
   const getTokenizer = () => globalThis.GPTTokenizer_o200k_base || null;
+
+  /** The tokenizer is injected on demand (see composer/index.js), so it may not be there yet. */
+  const hasTokenizer = () => typeof getTokenizer()?.countTokens === 'function';
 
   /** Token count of `text` and whether it came from the real tokenizer or from the length heuristic. */
   function countTokens(text) {
@@ -55,7 +59,7 @@
     return h ? `${h}h ${minutes % 60}m` : `${minutes}m`;
   }
 
-  GC.tokens = { CHARS_PER_TOKEN, normalizeDraft, countTokens, formatCount, formatDuration };
+  GC.tokens = { CHARS_PER_TOKEN, normalizeDraft, countTokens, hasTokenizer, formatCount, formatDuration };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = GC.tokens;
 })();

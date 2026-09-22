@@ -46,8 +46,9 @@ estrechos, pasa a dos líneas en lugar de encoger nada.
 
 - **Contador del borrador en vivo** — se actualiza al escribir, pegar y borrar, con el tokenizador real
   `o200k_base` (emoji, unicode y texto que *parece* un token especial se tratan como texto normal).
-- **Acumulado diario** — suma los mensajes que aparecen después de abrir cada conversación y se reinicia
-  solo a medianoche local. El historial que ya estaba en pantalla nunca se cuenta.
+- **Acumulado diario** — suma el turno que se está produciendo (tu mensaje nuevo y la respuesta mientras
+  ChatGPT la genera) y se reinicia solo a medianoche local. El historial de una conversación nunca se
+  cuenta, aunque ChatGPT lo pinte segundos después de abrirla.
 - **Detección del modelo** — la etiqueta del modelo se lee de la página y se muestra en el detalle diario.
 - **Selector de plan** — Free / Go / Plus / Pro cambia la referencia y los umbrales de color.
 - **Se reancla solo** — si React vuelve a crear el compositor, la barra se reinserta; nunca hay más de una.
@@ -79,9 +80,10 @@ repositorio, así que la carpeta que hay que seleccionar en Chrome es **la raíz
 4. Pulsa **Cargar descomprimida** (*Load unpacked*).
 5. Selecciona la carpeta **`chatgpt-token-counter`** — la que contiene directamente `manifest.json`,
    `icons/` y `src/`. No selecciones `src/` ni ninguna subcarpeta.
-6. Abre [chatgpt.com](https://chatgpt.com). Si ya la tenías abierta, recarga la pestaña.
+6. Abre [chatgpt.com](https://chatgpt.com). Si ya la tenías abierta no hace falta recargarla: la
+   extensión se añade sola a las pestañas de ChatGPT abiertas al instalarla o actualizarla.
 
-La barra aparece dentro del cuadro de mensaje en cuanto la página termina de cargar.
+La barra aparece dentro del cuadro de mensaje en cuanto ChatGPT termina de montar su editor.
 
 ## Uso
 
@@ -95,10 +97,11 @@ La barra aparece dentro del cuadro de mensaje en cuanto la página termina de ca
 ## Estructura del proyecto
 
 ```
-manifest.json                    Manifest V3; content scripts y permisos
+manifest.json                    Manifest V3; content scripts, service worker y permisos
 icons/                           Iconos 16 / 48 / 128
 docs/                            Capturas usadas en este README
 src/
+├── background.js                Service worker: inyección en pestañas abiertas y carga del tokenizador
 ├── vendor/o200k_base.js         Tokenizador gpt-tokenizer (ver THIRD_PARTY_NOTICES.md)
 └── content/
     ├── constants.js             Límites de referencia por plan y umbrales de color
@@ -127,12 +130,34 @@ Un único `MutationObserver` sobre `<body>` (con *throttle*) reinserta **el mism
 recrea el compositor, y un segundo observador sobre el editor sigue el borrador. Si ningún anclaje
 encaja, la barra simplemente no se dibuja y el conteo diario sigue funcionando.
 
+### Cuándo aparece la barra
+
+ChatGPT sirve primero un compositor renderizado en el servidor, con un `<textarea>` provisional dentro de
+la misma tarjeta, y React lo sustituye por el editor ProseMirror al hidratar la página (medido en
+chatgpt.com: la tarjeta es visible hacia 1 s y el editor aparece hacia 3–4 s). Cualquier nodo añadido a
+ese marcado provisional provoca un error de hidratación: React descarta el compositor entero y lo vuelve
+a crear. Por eso la barra se inserta en cuanto existe el editor `contenteditable`, sin ningún retardo
+fijo, y nunca antes. Hasta que el editor no está, la comprobación se repite en la siguiente tarea en
+lugar de esperar al *throttle*.
+
+El tokenizador (2 MB) no se carga con los *content scripts*: bloquearía el hilo principal mientras
+ChatGPT arranca. Cuando la barra ya está en pantalla y la página queda inactiva, el *service worker* lo
+inyecta en el mismo contexto aislado; si se escribiera antes, el borrador usaría la regla de 4
+caracteres marcada como `(est.)` y se recontaría al llegar el tokenizador.
+
+Al instalar, actualizar o recargar la extensión, Chrome no inyecta los *content scripts* en las páginas
+ya abiertas; el *service worker* lo hace en las pestañas de chatgpt.com. La copia nueva toma el relevo y
+la anterior (huérfana, sin contexto de extensión) se detiene y retira su barra, así que nunca se cuenta
+nada dos veces.
+
 ## Privacidad
 
 - No hace ninguna petición de red propia. Nada sale de tu navegador.
-- Solo se ejecuta en `https://chatgpt.com/*`. Sin `host_permissions` y sin `<all_urls>`.
+- Solo se ejecuta en `https://chatgpt.com/*`: `host_permissions` se limita a ese sitio (el mismo que ya
+  cubrían los *content scripts*, así que Chrome muestra el mismo aviso) y nunca `<all_urls>`.
 - Sin analítica, sin telemetría, sin identificadores.
-- Único permiso: `storage`, para recordar el total del día y el plan elegido.
+- Permisos: `storage`, para recordar el total del día y el plan elegido, y `scripting`, para que el
+  *service worker* inyecte los scripts de la extensión (y el tokenizador) en las pestañas de chatgpt.com.
 - No guarda el texto de tus mensajes: solo dos números (el acumulado del día y el plan).
 
 ## Limitaciones
@@ -179,18 +204,28 @@ formato de cifras y duraciones.
 
 Requiere Google Chrome instalado y Node ≥ 20; no necesita `npm install`. Lanza Chrome con un **perfil
 temporal desechable** (nunca tu perfil personal), carga la extensión con `Extensions.loadUnpacked` por
-CDP y ejecuta 36 comprobaciones: anclaje y unicidad de la barra, conteo del borrador contrastado contra
-el tokenizador de referencia, acumulado diario y umbrales de color, persistencia del plan tras recargar
-la página, reanclaje cuando el compositor se recrea o se elimina, navegación SPA, ausencia de bucles de
-renderizado, tooltips, temas claro y oscuro y doce anchos de ventana entre 1280 y 320 px comprobando que
-la barra nunca solapa un botón nativo ni provoca desbordamiento horizontal.
+CDP y ejecuta 46 comprobaciones: aparición de la barra en una pestaña que ya estaba abierta al instalar,
+anclaje y unicidad de la barra, conteo del borrador contrastado contra el tokenizador de referencia,
+acumulado diario y umbrales de color, historial que llega tarde y turnos recreados por React (no se
+cuentan), persistencia del plan tras recargar la página, reanclaje cuando el compositor se recrea o se
+elimina, navegación SPA, ausencia de bucles de renderizado, tooltips, temas claro y oscuro, doce anchos de
+ventana entre 1280 y 320 px comprobando que la barra nunca solapa un botón nativo ni provoca
+desbordamiento horizontal, compositor renderizado en el servidor (nada se inserta antes de hidratar y la
+barra aparece justo después) y recarga de la extensión con la pestaña abierta (relevo sin duplicados).
 
-**Resultado: 36/36 correctas, sin errores de consola atribuibles a la extensión.**
+**Resultado: 46/46 correctas en Google Chrome y en Brave, sin errores de consola atribuibles a la
+extensión.**
 
 En otro sistema operativo, indica la ruta del binario de Chrome:
 
 ```bash
 CHROME=/ruta/a/google-chrome node tests/e2e/chatgpt-e2e.mjs
+```
+
+Para Brave en macOS:
+
+```bash
+CHROME="/Applications/Brave Browser.app/Contents/MacOS/Brave Browser" node tests/e2e/chatgpt-e2e.mjs
 ```
 
 > Las pruebas E2E se ejecutan contra `tests/e2e/chatgpt-replica.html`, una réplica del compositor
